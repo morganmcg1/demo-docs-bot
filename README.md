@@ -4,38 +4,53 @@ A simple chatbot agent that answers questions about Weights & Biases using the O
 
 ## Setup
 
-1. Install dependencies
+1. **Install uv (Python package manager)**
+
+If you don't have `uv` installed, install it with:
 
 ```bash
-pip install -r requirements.txt
+curl -Ls https://astral.sh/uv/install.sh | sh
 ```
 
-2. Create a `.env` file based on the `.env.example` template and add your API keys
+2. **Install dependencies with uv**
+
+```bash
+uv sync
+```
+
+3. **Create a `.env` file based on the `.env.example` template and add your API keys**
 
 ```bash
 cp .env.example .env
 # Edit the .env file with your actual API keys
 ```
 
-3. Run the bot
+4. **Run the bot using uv**
 
 ```bash
-python main.py
+uv run main.py
 ```
 
-## Environment Variables
+5. **Or Run the bot server uv**
 
-- `OPENAI_API_KEY`: Your OpenAI API key (required when not using Gemini)
-- `GOOGLE_API_KEY`: Your Google API key (required when using Gemini)
-- `USE_GEMINI`: Set to "true" to use Google Gemini models instead of OpenAI
-- `WANDB_ENTITY`: Your Weights & Biases entity (team or username)
-- `WANDB_PROJECT`: Your Weights & Biases project name
+```bash
+uv run main.py --server
+```
 
-## Switching Between OpenAI and Google Gemini
+## Required Environment Variables (.env)
 
-By default, the agent uses OpenAI models. To switch to Google Gemini:
+Create a `.env` file in the project root with the following variables (see below for which are required for your use case):
 
-1. Ensure you have set your `GOOGLE_API_KEY` in the `.env` file
-2. Set `USE_GEMINI=true` in your `.env` file
+```
+# OpenAI
+OPENAI_API_KEY=your_openai_api_key
 
-The implementation shows how to integrate alternative LLM providers with the OpenAI Agents SDK.
+# Weights & Biases
+WANDB_ENTITY=your_wandb_entity
+WANDB_PROJECT=your_wandb_project
+```
+
+- Only the variables relevant to your provider(s) are strictly required.
+- Do not commit your .env file to version control!
+
+
