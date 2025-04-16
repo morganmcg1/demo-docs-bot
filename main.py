@@ -1,6 +1,6 @@
 from __future__ import annotations as _annotations
 import logging
-
+import os
 import asyncio
 import random
 import uuid
@@ -38,7 +38,10 @@ logging.basicConfig(level=logging.INFO)
 from dotenv import load_dotenv
 load_dotenv()
 
-weave.init("docs_agent")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY")
+WANDB_PROJECT = os.getenv("WANDB_PROJECT")
+
+weave.init(f"{WANDB_ENTITY}/{WANDB_PROJECT}")
 set_trace_processors([WeaveTracingProcessor()])
 
 ### CONTEXT
