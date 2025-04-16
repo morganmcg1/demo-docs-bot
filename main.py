@@ -1,13 +1,17 @@
 from __future__ import annotations as _annotations
 import logging
-logging.basicConfig(level=logging.DEBUG)
-from dotenv import load_dotenv
-load_dotenv()
 
 import asyncio
 import random
 import uuid
 import httpx
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+from simple_parsing import ArgumentParser
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
@@ -24,8 +28,18 @@ from agents import (
     function_tool,
     handoff,
     trace,
+    set_trace_processors
 )
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+import weave
+from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
+
+logging.basicConfig(level=logging.INFO)
+from dotenv import load_dotenv
+load_dotenv()
+
+weave.init("docs_agent")
+set_trace_processors([WeaveTracingProcessor()])
 
 ### CONTEXT
 
@@ -183,7 +197,7 @@ async def main():
         user_input = input("Enter your message: ")
         # Maintain chat history in context
         context.chat_history.append(f"user: {user_input}")
-        with trace("Customer support", group_id=conversation_id):
+        with trace("W&B Docs Agent", group_id=conversation_id):
             input_items.append({"content": user_input, "role": "user"})
             result = await Runner.run(current_agent, input_items, context=context)
 
@@ -205,12 +219,6 @@ async def main():
             input_items = result.to_input_list()
             current_agent = result.last_agent
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-from simple_parsing import ArgumentParser
-from dataclasses import dataclass
 
 app = FastAPI()
 
