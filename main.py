@@ -97,10 +97,33 @@ async def create_ticket(
     user_name: str,
     user_email: str,
     chat_history: list[str],
+    debug: bool = False,
+    disable_zendesk: bool = False,
 ) -> str:
     """
     Create a support ticket with the provided information.
+    If disable_zendesk is True, simulate ticket creation instead of calling Zendesk.
+    If debug is True, include extra debug info in the return value.
     """
+    # Simulate ticket creation if disable_zendesk is set
+    if disable_zendesk:
+        ticket_id = f"SIMULATED-{random.randint(1000,9999)}"
+        context.context.user_name = user_name
+        context.context.user_email = user_email
+        context.context.ticket_name = ticket_name
+        context.context.ticket_description = ticket_description
+        context.context.ticket_id = ticket_id
+        context.context.chat_history = chat_history
+        msg = (
+            f"[SIMULATED] Support ticket {ticket_id} created for {user_name} (email: {user_email})\n"
+            f"Title: {ticket_name}\n"
+            f"Description: {ticket_description}\n"
+            f"Chat History: {chat_history}"
+        )
+        if debug:
+            msg += f"\n[DEBUG] disable_zendesk flag is set. No Zendesk API call was made."
+        return msg
+
     # Check if USE_ZENDESK is set
     use_zendesk = os.environ.get("USE_ZENDESK", "").lower() in ("1", "true", "yes")
     if use_zendesk:
@@ -133,12 +156,15 @@ async def create_ticket(
             context.context.ticket_description = ticket_description
             context.context.ticket_id = ticket_id
             context.context.chat_history = chat_history
-            return (
+            msg = (
                 f"Zendesk ticket {ticket_id} created for {user_name} (email: {user_email})\n"
                 f"Title: {ticket_name}\n"
                 f"Description: {ticket_description}\n"
                 f"Chat History: {chat_history}"
             )
+            if debug:
+                msg += f"\n[DEBUG] Zendesk API response: {new_ticket}"
+            return msg
         except Exception as e:
             return f"Failed to create Zendesk ticket: {e}"
     else:
@@ -149,12 +175,15 @@ async def create_ticket(
         context.context.ticket_description = ticket_description
         context.context.ticket_id = ticket_id
         context.context.chat_history = chat_history
-        return (
+        msg = (
             f"Support ticket {ticket_id} created for {user_name} (email: {user_email})\n"
             f"Title: {ticket_name}\n"
             f"Description: {ticket_description}\n"
             f"Chat History: {chat_history}"
         )
+        if debug:
+            msg += f"\n[DEBUG] USE_ZENDESK is not enabled, simulated ticket only."
+        return msg
 
 ### HOOKS
 
@@ -231,7 +260,7 @@ support_ticket_agent.handoffs.append(triage_agent)
 
 ### RUN
 
-async def main():
+async def main(debug: bool = False, disable_zendesk: bool = False):
     current_agent: Agent[SupportTicketContext] = triage_agent
     input_items: list[TResponseInputItem] = []
     context = SupportTicketContext()
@@ -333,6 +362,8 @@ async def run_agent_endpoint(request: Request):
 class Args:
     server: bool = False
     port: int = 8000
+    debug: bool = False
+    disable_zendesk: bool = False
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -342,4 +373,4 @@ if __name__ == "__main__":
     if args.server:
         uvicorn.run("main:app", host="0.0.0.0", port=args.port, reload=True)
     else:
-        asyncio.run(main())
+        asyncio.run(main(debug=args.debug, disable_zendesk=args.disable_zendesk))
