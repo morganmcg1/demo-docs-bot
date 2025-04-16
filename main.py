@@ -5,6 +5,7 @@ import asyncio
 import random
 import uuid
 import httpx
+import requests
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -72,7 +73,7 @@ class SupportTicketContext(BaseModel):
     - Weave Datasets"""
 )
 async def wandbot_support_tool(question: str) -> str:
-    url = WANDBOT_BASE_URL + "/chat/query"
+    url = os.getenv("WANDBOT_BASE_URL") + "/chat/query"
     payload = {"question": question, "application": "docs-agent"}
     logging.debug(f"Sending request to support bot: url={url}, payload={payload}")
     try:
@@ -100,19 +101,60 @@ async def create_ticket(
     """
     Create a support ticket with the provided information.
     """
-    ticket_id = f"TICKET-{random.randint(1000,9999)}"
-    context.context.user_name = user_name
-    context.context.user_email = user_email
-    context.context.ticket_name = ticket_name
-    context.context.ticket_description = ticket_description
-    context.context.ticket_id = ticket_id
-    context.context.chat_history = chat_history
-    return (
-        f"Support ticket {ticket_id} created for {user_name} (email: {user_email})\n"
-        f"Title: {ticket_name}\n"
-        f"Description: {ticket_description}\n"
-        f"Chat History: {chat_history}"
-    )
+    # Check if USE_ZENDESK is set
+    use_zendesk = os.environ.get("USE_ZENDESK", "").lower() in ("1", "true", "yes")
+    if use_zendesk:
+        # Required Zendesk env vars
+        subdomain = os.environ.get("ZENDESK_SUBDOMAIN")
+        auth_email = os.environ.get("ZENDESK_EMAIL")
+        api_token = os.environ.get("ZENDESK_API_TOKEN")
+        if not (subdomain and auth_email and api_token):
+            return "Zendesk environment variables missing. Ticket not created."
+        url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
+        auth = (f"{auth_email}/token", api_token)
+        headers = {"Content-Type": "application/json"}
+        ticket_data = {
+            "ticket": {
+                "subject": ticket_name,
+                "comment": {"body": ticket_description + "\n\nChat History:\n" + "\n".join(chat_history)},
+                "requester": {"name": user_name, "email": user_email},
+                "priority": "normal",
+                "tags": ["api_created", "docs_agent"]
+            }
+        }
+        try:
+            response = requests.post(url, headers=headers, auth=auth, json=ticket_data)
+            response.raise_for_status()
+            new_ticket = response.json()
+            ticket_id = new_ticket["ticket"]["id"]
+            context.context.user_name = user_name
+            context.context.user_email = user_email
+            context.context.ticket_name = ticket_name
+            context.context.ticket_description = ticket_description
+            context.context.ticket_id = ticket_id
+            context.context.chat_history = chat_history
+            return (
+                f"Zendesk ticket {ticket_id} created for {user_name} (email: {user_email})\n"
+                f"Title: {ticket_name}\n"
+                f"Description: {ticket_description}\n"
+                f"Chat History: {chat_history}"
+            )
+        except Exception as e:
+            return f"Failed to create Zendesk ticket: {e}"
+    else:
+        ticket_id = f"TICKET-{random.randint(1000,9999)}"
+        context.context.user_name = user_name
+        context.context.user_email = user_email
+        context.context.ticket_name = ticket_name
+        context.context.ticket_description = ticket_description
+        context.context.ticket_id = ticket_id
+        context.context.chat_history = chat_history
+        return (
+            f"Support ticket {ticket_id} created for {user_name} (email: {user_email})\n"
+            f"Title: {ticket_name}\n"
+            f"Description: {ticket_description}\n"
+            f"Chat History: {chat_history}"
+        )
 
 ### HOOKS
 
