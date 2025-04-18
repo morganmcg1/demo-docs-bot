@@ -5,16 +5,21 @@ import random
 import httpx
 import requests
 from agents import function_tool
-from agents.extensions import RunContextWrapper
+from agents.run_context import RunContextWrapper
 
 from models import SupportTicketContext
-from prompts import WANDBOT_DESCRIPTION
+from prompts import WANDBOT_TOOL_DESCRIPTION, CREATE_TICKET_TOOL_DESCRIPTION
 
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 @function_tool(
-    name_override="wandbot_support_tool", description_override=WANDBOT_DESCRIPTION
+    description_override=WANDBOT_TOOL_DESCRIPTION
 )
 async def wandbot_support_tool(question: str) -> str:
+    if not os.getenv("WANDBOT_BASE_URL"):
+        raise ValueError("WANDBOT_BASE_URL environment variable is not set.")
     url = os.getenv("WANDBOT_BASE_URL") + "/chat/query"
     payload = {"question": question, "application": "docs-agent"}
     logging.debug(f"Sending request to support bot: url={url}, payload={payload}")
@@ -41,8 +46,7 @@ def set_ticket_context(context, user_name, user_email, ticket_name, ticket_descr
 
 
 @function_tool(
-    name_override="create_ticket",
-    description_override="Create a support ticket with the provided information.",
+    description_override=CREATE_TICKET_TOOL_DESCRIPTION,
 )
 async def create_ticket(
     context: RunContextWrapper[SupportTicketContext],
@@ -50,14 +54,12 @@ async def create_ticket(
     ticket_description: str,
     user_name: str,
     user_email: str,
-    debug: bool = False,
-    disable_zendesk: bool = False,
+    debug: bool,
+    disable_zendesk: bool,
 ) -> str:
-    """
-    Create a support ticket with the provided information.
-    If disable_zendesk is True, simulate ticket creation instead of calling Zendesk.
-    If debug is True, include extra debug info in the return value.
-    """
+    debug = debug or False
+    disable_zendesk = disable_zendesk or False
+
     # Simulate ticket creation if disable_zendesk is set
     if disable_zendesk:
         ticket_id = f"SIMULATED-{random.randint(1000, 9999)}"
