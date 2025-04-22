@@ -3,8 +3,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Assuming your FastAPI app instance is named 'app' in server.py
-from server import app
-from models import SupportTicketContext
+from wandb_docs_agent.server import app
+from wandb_docs_agent.models import SupportTicketContext
 
 # Mark the test to run asynchronously if needed, depends on your test runner setup
 @pytest.mark.asyncio

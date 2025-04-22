@@ -15,13 +15,13 @@ from agents import (
 from dotenv import load_dotenv
 from weave.integrations.openai_agents.openai_agents import WeaveTracingProcessor
 
-from config import DocsAgentConfig
-from models import SupportTicketContext
-from prompts import (
+from .config import DocsAgentConfig
+from .models import SupportTicketContext
+from .prompts import (
     SUPPORT_TICKET_AGENT_INSTRUCTIONS,
     TRIAGE_AGENT_INSTRUCTIONS,
 )
-from tools import create_ticket, wandbot_tool
+from .tools import create_ticket, wandbot_tool
 
 load_dotenv(override=True)
 args: DocsAgentConfig = simple_parsing.parse(DocsAgentConfig)
@@ -52,7 +52,9 @@ the W&B Support team.",
     tools=[create_ticket],
 )
 
-triage_agent = Agent[SupportTicketContext](
+triage_agent = Agent[
+    SupportTicketContext
+](
     name="triage_agent",
     model=args.triage_agent_model_name,
     handoffs=[support_ticket_agent],
@@ -60,14 +62,14 @@ triage_agent = Agent[SupportTicketContext](
 and manage a generaal triage conversation with a user",
     instructions=TRIAGE_AGENT_INSTRUCTIONS,
     tools=[wandbot_tool],
-    tool_use_behavior={"stop_at_tool_names": [wandbot_tool.name]},  # directly return the result from the wandbot tool if its called instead of passing to LLM)
+    tool_use_behavior={
+        "stop_at_tool_names": [wandbot_tool.name]
+    },  # directly return the result from the wandbot tool if its called instead of passing to LLM)
 )
 
-support_ticket_agent.handoffs.append(
-    handoff(agent=triage_agent)
-)
+support_ticket_agent.handoffs.append(handoff(agent=triage_agent))
 
-# --- Setup handoffs after both agents are defined --- 
+# --- Setup handoffs after both agents are defined ---
 
 # --- New: Dictionary to map agent names to objects ---
 AGENTS: Dict[str, Agent[SupportTicketContext]] = {
@@ -89,7 +91,7 @@ AGENTS: Dict[str, Agent[SupportTicketContext]] = {
 if __name__ == "__main__":
     if args.server:
         uvicorn.run(
-            "server:app",  # Point to the app instance in server.py
+            "wandb_docs_agent.server:app",  # Point to the app instance in server.py
             host="0.0.0.0",
             port=args.port,
             reload=True,

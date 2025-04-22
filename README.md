@@ -18,20 +18,26 @@ curl -Ls https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-3. **Create a `.env` file based on the `.env.example` template and add your API keys**
+3. **Install the package in editable mode**
+
+```bash
+uv pip install -e .
+```
+
+4. **Create a `.env` file based on the `.env.example` template and add your API keys**
 
 ```bash
 cp .env.example .env
 # Edit the .env file with your actual API keys
 ```
 
-4. **Run the bot using uv**
+5. **Run the bot using uv**
 
 ```bash
 uv run python -m wandb_docs_agent.main
 ```
 
-5. **Or Run the bot server uv**
+6. **Or Run the bot server uv**
 
 ```bash
 uv run python -m wandb_docs_agent.main --server
