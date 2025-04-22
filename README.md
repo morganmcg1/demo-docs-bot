@@ -28,13 +28,13 @@ cp .env.example .env
 4. **Run the bot using uv**
 
 ```bash
-uv run main.py
+uv run python -m wandb_docs_agent.main
 ```
 
 5. **Or Run the bot server uv**
 
 ```bash
-uv run main.py --server
+uv run python -m wandb_docs_agent.main --server
 ```
 
 ## Required Environment Variables (.env)
@@ -52,5 +52,3 @@ WANDB_PROJECT=your_wandb_project
 
 - Only the variables relevant to your provider(s) are strictly required.
 - Do not commit your .env file to version control!
-
-
