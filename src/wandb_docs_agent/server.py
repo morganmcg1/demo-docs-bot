@@ -1,78 +1,53 @@
 import logging
 import uuid
-from typing import Dict, Optional, Tuple
+import ast
+# Remove unused typing imports
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import json
 
 from agents import (
     Agent,
-    ItemHelpers,
-    MessageOutputItem,
     Runner,
-    ToolCallItem,
-    ToolCallOutputItem,
     trace,
+    ItemHelpers
 )
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-
+from .models import SupportTicketContext, DocsAgentResponse
 from .main import AGENTS
-from .models import DocsAgentResponse, SupportTicketContext
-from .tools import wandbot_tool  # Import the specific tool
+from .database import init_db, load_state_from_db, save_state_to_db
+from .utils import map_outputs_to_agents
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Application startup...")
+    init_db()
+    logger.info("Database initialized.")
+    yield
+    logger.info("Application shutdown.")
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Updated State Store (Using response_id) ---
-CONVERSATION_STATE: Dict[str, Tuple[str, Optional[str], SupportTicketContext]] = {}
-
-
-def load_state(conversation_id: str) -> Tuple[str, Optional[str], SupportTicketContext]:
-    """Loads state (agent_name, last_response_id, context) or returns defaults."""
-    return CONVERSATION_STATE.get(
-        conversation_id,
-        (
-            "triage_agent",
-            None,
-            SupportTicketContext(),
-        ),  # Default state: no previous response_id
-    )
-
-
-def save_state(
-    conversation_id: str,
-    agent_name: str,
-    last_response_id: Optional[str],
-    context: SupportTicketContext,
-):
-    """Saves the current conversation state (agent_name, last_response_id, context)."""
-    CONVERSATION_STATE[conversation_id] = (agent_name, last_response_id, context)
-    logger.info(
-        f"Saved state for conversation_id: {conversation_id}. Last response ID: {last_response_id}"
-    )
-
-
-# --- End State Store ---
-
-
 @app.post("/docs-agent")
 async def run_agent_endpoint(request: Request):
     data = await request.json()
     user_message = data.get("message")
-    conversation_id = data.get("conversation_id")  # Can be None
+    conversation_id = data.get("conversation_id")
 
-    # Improved logging for debugging agent state and conversation ID
     logger.info(f"[INCOMING REQUEST] conversation_id: {conversation_id}")
 
-    # 1. Validate required input and generate conversation_id if missing
     if not user_message:
         raise HTTPException(
             status_code=400,
@@ -85,16 +60,12 @@ async def run_agent_endpoint(request: Request):
             f"No conversation_id provided, generated new one: {conversation_id}"
         )
 
-    # Now conversation_id is guaranteed to be a string
-
-    # 2. Load state from store using the guaranteed conversation_id
-    current_agent_name, last_response_id, agent_context = load_state(conversation_id)
+    agent_context, current_agent_name, last_response_id = load_state_from_db(conversation_id)
     logger.info(
         f"[LOAD STATE] For conversation_id: {conversation_id}, loaded agent: {current_agent_name}, \
 last_response_id: {last_response_id}"
     )
 
-    # 3. Get the current agent object
     current_agent: Agent[SupportTicketContext] | None = AGENTS.get(current_agent_name)
     if not current_agent:
         logger.error(
@@ -102,21 +73,27 @@ last_response_id: {last_response_id}"
         )
         current_agent_name = "triage_agent"
         current_agent = AGENTS[current_agent_name]
-        last_response_id = None  # Reset response ID
-        agent_context = SupportTicketContext()  # Reset context
+        last_response_id = None
+        agent_context = SupportTicketContext()
 
-    # 4. Prepare inputs for Runner.run (only current message)
     current_input = [{"role": "user", "content": user_message}]
 
-    # 5. Run the agent turn using Runner.run with response_id
+    if agent_context.chat_history.get(current_agent_name, None) is not None:
+        input_with_history = agent_context.chat_history.get(current_agent_name, []) + current_input
+    else:
+        input_with_history = current_input
     initial_user_query_snippet = user_message[:20]
     logger.info(
         f"Running agent '{current_agent_name}' for conversation {conversation_id} with last_response_id: {last_response_id}"
     )
-    print(f"\n--- Running Agent: {current_agent_name} for Conv: {conversation_id} ---")
-    print(f"Current Input: {current_input}")
-    print(f"Agent Context (Before): {agent_context}")
-    print(f"Using Response ID: {last_response_id}")
+    logger.info(f"\n--- Running Agent: {current_agent_name} for Conv: {conversation_id} ---")
+    logger.info(f"Current Input: {current_input}")
+    logger.info(f"Running agent '{current_agent.name}' with full input:")
+    for inp in input_with_history:
+        logger.info(f"  - {inp}")
+    logger.info("-----------------\n\n")
+    logger.info(f"Agent Context (Before): {agent_context}")
+    logger.info(f"Using Response ID: {last_response_id}")
 
     try:
         with trace(
@@ -125,140 +102,129 @@ last_response_id: {last_response_id}"
         ):
             result = await Runner.run(
                 current_agent,
-                input=current_input,  # Rename 'inputs' to 'input'
-                context=agent_context,  # Pass the mutable context
-                previous_response_id=last_response_id,  # Use the stored response ID
+                input=input_with_history,
+                context=agent_context,
+                # previous_response_id=last_response_id,
             )
 
-        # Log the full result object for debugging
-        logger.info(f"Full Agent Result: {repr(result)}")
+        new_items_input_list = [item.to_input_item() for item in result.new_items]
+        current_turn_history = current_input + new_items_input_list
+        last_active_agent_name = result.last_agent.name
+        logger.info(f"Last active agent name: {last_active_agent_name}")
+        last_response_id = result.last_response_id
 
-        # 6. Process the result
-        new_agent_messages = []
-        logger.info(
-            f"Agent result.new_items: {[type(item).__name__ for item in result.new_items]}\n\n"
-        )
-        logger.info(
-            f"Agent result.last_agent: {getattr(result.last_agent, 'name', repr(result.last_agent))}\n\n"
-        )
-        logger.info(
-            f"Agent result.last_response_id: {getattr(result, 'last_response_id', None)}\n\n"
-        )
-        logger.info(
-            f"Agent result.raw_responses: {[item for item in result.raw_responses]}\n\n"
-        )
-        logger.info(f"Agent result.input: {result.input}\n\n")
-        for idx, item in enumerate(result.new_items):
-            logger.info(
-                f"  Item {idx}: type={type(item).__name__}, content={getattr(item, 'content', None)}"
-            )
-            if isinstance(item, MessageOutputItem):
-                text_content = ItemHelpers.text_message_output(item)
-                logger.info(f"    MessageOutputItem content: {text_content}")
-                if text_content:
-                    new_agent_messages.append(
-                        {"role": "assistant", "content": text_content}
-                    )
+        logger.info("\n\Current turn history, from new items input list:")
+        for item in current_turn_history:
+            logger.info(f"  - {item}")
+        logger.info("-----------------\n\n")
+
+        logger.info("\n\nNew Items from agent result:")
+        logger.info(f"  --- Last Response ID: {last_response_id}\n\n")
+        for item in result.new_items:
+            logger.info(f"  - Item Type: {item.type}:")
+            
+            if item.type == "message_output_item":
+                logger.info(f"  - Item ID: {item.raw_item.id}")
+                logger.info(f"  - Item Text: {item.raw_item.content[:100]}...")
+            elif item.type == "tool_call_item":  # ResponseFunctionToolCall
+                logger.info(f"  - Item name: {item.raw_item.name}")
+                logger.info(f"  - Item Call ID: {item.raw_item.call_id}")
+                logger.info(f"  - Item ID: {item.raw_item.id}")
+            elif item.type == "tool_call_output_item":
+                logger.info(f"  - Item Call ID: {item.raw_item["call_id"]}")
+                logger.info(f"  - Item id: {item.raw_item["output"][:150]}...")
+            elif item.type == "handoff_call_item":
+                logger.info(f"  - Item Name: {item.raw_item.name}")
+                logger.info(f"  - Item Call ID: {item.raw_item.call_id}")
+                logger.info(f"  - Item id: {item.raw_item.id}...")
+            elif item.type == "handoff_output_item":
+                logger.info(f"  - Item Call ID: {item.raw_item['call_id']}")
+                logger.info(f"  - Item Output: {item.raw_item['output']}")
+                output = item.raw_item["output"]
+                if isinstance(output, dict):
+                    current_agent_tmp = output["assistant"]
+                elif isinstance(output, str):
+                    try:
+                        # Try JSON first (double quotes)
+                        current_agent_tmp = json.loads(output)["assistant"]
+                    except json.JSONDecodeError:
+                        # Fallback: try to eval Python dict string (not recommended for untrusted input)
+                        current_agent_tmp = ast.literal_eval(output)["assistant"]
+                else:
+                    # Handle unexpected types
+                    raise ValueError(f"Unsupported output type: {type(output)}")
+
             else:
-                logger.info(f"    Non-message item: {repr(item)}")
+                logger.info(f"Need to add logging for type: {item.type}...")
+            logger.info("  ------\n\n")
 
-        # If no MessageOutputItem was found, check if we stopped at wandbot_tool
-        if not new_agent_messages:
-            wandbot_call_id = None
-            wandbot_output = None
-            for item in result.new_items:
-                if (
-                    isinstance(item, ToolCallItem)
-                    and item.raw_item.name == wandbot_tool.name
-                ):
-                    wandbot_call_id = item.raw_item.call_id
-                    logger.info(
-                        f"Found ToolCallItem for {wandbot_tool.name} with call_id: {wandbot_call_id}"
-                    )
-                # Check ToolCallOutputItem's raw_item dictionary for call_id
-                elif (
-                    isinstance(item, ToolCallOutputItem)
-                    and item.raw_item["call_id"] == wandbot_call_id
-                ):
-                    wandbot_output = item.output
-                    logger.info(
-                        f"Found matching ToolCallOutputItem for {wandbot_tool.name} with output."
-                    )
-                    break  # Found the output, no need to check further
-
-            if wandbot_output:
-                logger.info(
-                    f"Using output from {wandbot_tool.name} as assistant message."
-                )
-                new_agent_messages.append(
-                    {"role": "assistant", "content": wandbot_output}
-                )
-            else:
-                logger.warning(
-                    "No MessageOutputItem and no wandbot_tool output found in result!"
-                )
-
-        # 7. Update chat history in the context
-        if current_input:
-            agent_context.chat_history.extend(current_input)
-        if new_agent_messages:
-            agent_context.chat_history.extend(new_agent_messages)
-
-        # Defensive agent handoff logic
-        handoff_detected = any(
-            type(item).__name__ in ["HandoffCallItem", "HandoffOutputItem"]
-            for item in result.new_items
-        )
-        if handoff_detected:
-            next_agent_name = result.last_agent.name
+        last_output = result.new_items[-1]
+        if last_output.type == "message_output_item":
+            final_messages_for_client = ItemHelpers.text_message_output(last_output) + "<!<" + last_active_agent_name+ ">!>"
+        elif last_output.type == "tool_call_output_item":
+            final_messages_for_client = str(last_output.output) + "<!<" + last_active_agent_name+ ">!>"
         else:
-            next_agent_name = (
-                current_agent_name  # Stay on the current agent unless explicit handoff
-            )
-
-        new_response_id = (
-            result.last_response_id
-        )  # Use the property to get the last response ID
-
-        logger.info(
-            f"Agent run finished. Next agent: {next_agent_name}. New Response ID: {new_response_id}. New messages: {len(new_agent_messages)}"
+            raise ValueError(f"Error trying to parse `final_messages_for_client`, unexpected last output type: {last_output.type}")
+        
+        # if last_active_agent_name in agent_context.chat_history:
+        #     logger.info("Current chat history (pre update):")
+        #     for message in agent_context.chat_history[last_active_agent_name]:
+        #         logger.info(f"  {message}")
+        #     logger.info("-----------------\n\n")
+        
+        # Update chat history for all agents in the turn using map_outputs_to_agents
+        segmented = map_outputs_to_agents(
+            outputs = current_turn_history, 
+            initial_agent_name = current_agent.name
         )
-        logger.info(f"Agent Context (After): {agent_context}")
-        logger.info(f"Next Agent: {next_agent_name}")
-        logger.info(f"New Response ID: {new_response_id}")
-        logger.info(f"New Messages: {new_agent_messages}")
-        logger.info("------------------------------------------------------------\n")
+        for agent, outputs in segmented.items():
+            if agent not in agent_context.chat_history:
+                agent_context.chat_history[agent] = []
+            # Build set of existing message IDs for this agent
+            existing_ids = set()
+            for msg in agent_context.chat_history[agent]:
+                # Each message may be dict with 'id', or may not have 'id'
+                if isinstance(msg, dict) and 'id' in msg:
+                    existing_ids.add(msg['id'])
+            # Only append outputs with new IDs
+            for output in outputs:
+                output_id = output.get('id') if isinstance(output, dict) else None
+                if output_id is not None:
+                    if output_id not in existing_ids:
+                        agent_context.chat_history[agent].append(output)
+                        existing_ids.add(output_id)
+                else:
+                    # If no id, fallback: append if not already present as dict
+                    if output not in agent_context.chat_history[agent]:
+                        agent_context.chat_history[agent].append(output)
+        agent_context.active_agent_name = last_active_agent_name
+        agent_context.agent_last_response_ids[last_active_agent_name] = last_response_id
 
-        # 8. Save updated state (including the *new* response ID)
-        save_state(conversation_id, next_agent_name, new_response_id, agent_context)
-        logger.info(
-            f"[SAVE STATE] For conversation_id: {conversation_id}, saved agent: {next_agent_name}, new_response_id: {new_response_id}"
+        save_state_to_db(
+            conversation_id=conversation_id, 
+            context=agent_context,
+            agent_name=last_active_agent_name, 
+            last_response_id=last_response_id
         )
 
-        # 9. Prepare and return response to client
-        assistant_message_content = "No response"
-        agent_error = False
-        agent_error_message = None
-        if new_agent_messages:
-            # Ensure content is string, handle potential non-string tool outputs if necessary
-            raw_content = new_agent_messages[0]["content"]
-            assistant_message_content = (
-                str(raw_content)
-                if raw_content is not None
-                else "Agent returned empty content."
+        if final_messages_for_client:
+            return DocsAgentResponse(
+                answer=final_messages_for_client,
+                conversation_id=conversation_id,
+                has_error=False,
+                error_message=None,
             )
         else:
-            agent_error = True
-            agent_error_message = "Agent issue: [No text response generated]"
+            return DocsAgentResponse(
+                answer="No response generated.",
+                conversation_id=conversation_id,
+                has_error=True,
+                error_message="No response generated.",
+            )
 
-        return DocsAgentResponse(
-            answer=assistant_message_content,
-            conversation_id=conversation_id,
-            has_error=agent_error,
-            error_message=agent_error_message,
-        )
-
+    except HTTPException as e:
+        logger.error(f"HTTP Exception during agent run for conversation {conversation_id}: {e.detail}")
+        raise e
     except Exception as e:
         logger.exception(f"Error during agent run for conversation {conversation_id}")
-        save_state(conversation_id, current_agent_name, last_response_id, agent_context)
-        raise HTTPException(status_code=500, detail=f"Agent processing error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")

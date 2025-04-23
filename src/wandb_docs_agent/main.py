@@ -2,9 +2,9 @@ from __future__ import annotations as _annotations
 
 import logging
 import os
+import sys
 from typing import Dict
 
-import simple_parsing
 import uvicorn
 import weave
 from agents import (
@@ -24,7 +24,18 @@ from .prompts import (
 from .tools import create_ticket, wandbot_tool
 
 load_dotenv(override=True)
-args: DocsAgentConfig = simple_parsing.parse(DocsAgentConfig)
+
+def get_default_args():
+    # Provide defaults for testing/imports
+    from .config import DocsAgentConfig
+    return DocsAgentConfig()
+
+if __name__ == "__main__":
+    import simple_parsing
+    args: DocsAgentConfig = simple_parsing.parse(DocsAgentConfig)
+else:
+    args = get_default_args()
+
 if args.debug:
     logging.basicConfig(level=logging.DEBUG)
 else:

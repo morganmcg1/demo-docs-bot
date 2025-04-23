@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Dict, List
+from typing import Dict, List, Any
 
 class DocsAgentResponse(BaseModel):
     answer: str
@@ -13,7 +13,7 @@ class SupportTicketContext(BaseModel):
     ticket_id: str | None = None
     ticket_name: str | None = None
     ticket_description: str | None = None
-    chat_history: List[Dict[str, str]] = Field(default_factory=list)
+    chat_history: Dict[Any, Any] = Field(default_factory=dict)
     # Store the last response ID per agent to maintain separate states
     agent_last_response_ids: Dict[str, str] = Field(default_factory=dict)
     active_agent_name: str | None = None

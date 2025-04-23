@@ -7,8 +7,8 @@ import requests
 from agents import function_tool
 from agents.run_context import RunContextWrapper
 
-from models import SupportTicketContext
-from prompts import WANDBOT_TOOL_DESCRIPTION, CREATE_TICKET_TOOL_DESCRIPTION
+from .models import SupportTicketContext
+from .prompts import WANDBOT_TOOL_DESCRIPTION, CREATE_TICKET_TOOL_DESCRIPTION
 
 from dotenv import load_dotenv
 
@@ -51,7 +51,7 @@ def set_ticket_context(
     context.context.user_email = user_email
     context.context.ticket_name = ticket_name
     context.context.ticket_description = ticket_description
-    context.context.ticket_id = ticket_id
+    context.context.ticket_id = str(ticket_id)
 
 
 @function_tool(
@@ -86,18 +86,30 @@ async def create_ticket(
         auth = (f"{auth_email}/token", api_token)
         headers = {"Content-Type": "application/json"}
 
-        # Format chat history into a readable string
+        # Flatten chat history if it's a dict of lists (agent -> messages)
+        chat_history = context.context.chat_history
+        if isinstance(chat_history, dict):
+            all_msgs = []
+            for agent_msgs in chat_history.values():
+                all_msgs.extend(agent_msgs)
+        else:
+            all_msgs = chat_history
+
+        # Format chat history into a readable string, only including messages with a 'role' key
         chat_history_str = "\n".join(
-            [f"[{msg['role'].capitalize()}]: {msg['content']}" for msg in context.context.chat_history]
+            [
+                f"[{msg['role'].capitalize()}]: {msg['text'] if msg['role'] == 'assistant' and 'text' in msg else msg.get('content', msg)}"
+                for msg in all_msgs if 'role' in msg
+            ]
         )
 
         # Combine comment body parts into a single string
         comment_body = (
             f"{'='*6} Ticket description from Docs Agent {'='*6}\n\n"
             f"{ticket_description}\n\n"
-            f"{'='*6} Chat History {'='*6}\n\n"
-            f"{chat_history_str}\n\n"
-            f"{'='*25}"
+            # f"{'='*6} Chat History {'='*6}\n\n"
+            # f"{chat_history_str}\n\n"
+            f"{'='*35}"
         )
 
         ticket_data = {
@@ -126,7 +138,7 @@ async def create_ticket(
                 f"Zendesk ticket {ticket_id} created for {user_name} (email: {user_email})\n"
                 f"Title: {ticket_name}\n"
                 f"Description: {ticket_description}\n"
-                f"Chat History: {context.context.chat_history}"
+                # f"Chat History: {context.context.chat_history}"
             )
             msg += f"\n[DEBUG] Zendesk API response: {new_ticket}"
             logger.info(msg)
@@ -144,7 +156,7 @@ async def create_ticket(
             f"Support ticket {ticket_id} created for {user_name} (email: {user_email})\n"
             f"Title: {ticket_name}\n"
             f"Description: {ticket_description}\n"
-            f"Chat History: {context.context.chat_history}"
+            # f"Chat History: {context.context.chat_history}"
         )
         logger.info(msg)
         return msg
