@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 
 @dataclass
@@ -11,3 +10,4 @@ class DocsAgentConfig:
     triage_agent_model_name: str = "gpt-4.1-mini-2025-04-14"
     support_ticket_agent_model_provider: str = "openai"
     support_ticket_agent_model_name: str = "gpt-4.1-mini-2025-04-14"
+    openai: bool = False  # If true, return OpenAI-compatible responses

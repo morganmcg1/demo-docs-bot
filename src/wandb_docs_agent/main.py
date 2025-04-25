@@ -42,14 +42,13 @@ else:
     logging.basicConfig(level=logging.INFO)
 
 
+os.environ["SERVER_OPENAI_MODE"] = str(args.openai)
+
 WANDB_ENTITY = os.getenv("WANDB_ENTITY")
 WANDB_PROJECT = os.getenv("WANDB_PROJECT")
 
 weave.init(f"{WANDB_ENTITY}/{WANDB_PROJECT}")
 set_trace_processors([WeaveTracingProcessor()])
-
-
-### HOOKS
 
 
 ### AGENTS

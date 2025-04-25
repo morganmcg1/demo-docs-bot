@@ -1,6 +1,8 @@
 import logging
 import uuid
 import ast
+import os
+import time
 # Remove unused typing imports
 
 from fastapi import FastAPI, Request, HTTPException
@@ -18,6 +20,28 @@ from .models import SupportTicketContext, DocsAgentResponse
 from .main import AGENTS
 from .database import init_db, load_state_from_db, save_state_to_db
 from .utils import map_outputs_to_agents
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+
+# --- OpenAI-compatible request models ---
+class OpenAICompletionRequest(BaseModel):
+    model: str
+    prompt: str
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    # ... add more fields as needed
+
+class OpenAIChatMessage(BaseModel):
+    role: str
+    content: str
+    name: Optional[str] = None
+
+class OpenAIChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[OpenAIChatMessage]
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    # ... add more fields as needed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,52 +64,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/docs-agent")
-async def run_agent_endpoint(request: Request):
-    data = await request.json()
-    user_message = data.get("message")
-    conversation_id = data.get("conversation_id")
-
-    logger.info(f"[INCOMING REQUEST] conversation_id: {conversation_id}")
-
-    if not user_message:
-        raise HTTPException(
-            status_code=400,
-            detail="'message' is required.",
-        )
-
+# --- Core agent logic, extracted ---
+async def run_agent_core(user_message: str, conversation_id: Optional[str], openai_mode: bool = False) -> Dict[str, Any]:
+    import uuid, time
+    from fastapi import HTTPException
+    logger = logging.getLogger(__name__)
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
-        logger.info(
-            f"No conversation_id provided, generated new one: {conversation_id}"
-        )
-
+        logger.info(f"No conversation_id provided, generated new one: {conversation_id}")
     agent_context, current_agent_name, last_response_id = load_state_from_db(conversation_id)
-    logger.info(
-        f"[LOAD STATE] For conversation_id: {conversation_id}, loaded agent: {current_agent_name}, \
-last_response_id: {last_response_id}"
-    )
-
+    logger.info(f"[LOAD STATE] For conversation_id: {conversation_id}, loaded agent: {current_agent_name}, last_response_id: {last_response_id}")
     current_agent: Agent[SupportTicketContext] | None = AGENTS.get(current_agent_name)
     if not current_agent:
-        logger.error(
-            f"Agent '{current_agent_name}' not found for conversation {conversation_id}. Resetting to triage."
-        )
+        logger.error(f"Agent '{current_agent_name}' not found for conversation {conversation_id}. Resetting to triage.")
         current_agent_name = "triage_agent"
         current_agent = AGENTS[current_agent_name]
         last_response_id = None
         agent_context = SupportTicketContext()
-
     current_input = [{"role": "user", "content": user_message}]
-
     if agent_context.chat_history.get(current_agent_name, None) is not None:
         input_with_history = agent_context.chat_history.get(current_agent_name, []) + current_input
     else:
         input_with_history = current_input
     initial_user_query_snippet = user_message[:20]
-    logger.info(
-        f"Running agent '{current_agent_name}' for conversation {conversation_id} with last_response_id: {last_response_id}"
-    )
+    logger.info(f"Running agent '{current_agent_name}' for conversation {conversation_id} with last_response_id: {last_response_id}")
     logger.info(f"\n--- Running Agent: {current_agent_name} for Conv: {conversation_id} ---")
     logger.info(f"Current Input: {current_input}")
     logger.info(f"Running agent '{current_agent.name}' with full input:")
@@ -94,12 +96,8 @@ last_response_id: {last_response_id}"
     logger.info("-----------------\n\n")
     logger.info(f"Agent Context (Before): {agent_context}")
     logger.info(f"Using Response ID: {last_response_id}")
-
     try:
-        with trace(
-            f"Docs Agent ({current_agent_name}) - '{initial_user_query_snippet}...'",
-            group_id=conversation_id,
-        ):
+        with trace(f"Docs Agent ({current_agent_name}) - '{initial_user_query_snippet}...'", group_id=conversation_id):
             result = await Runner.run(
                 current_agent,
                 input=input_with_history,
@@ -207,24 +205,117 @@ last_response_id: {last_response_id}"
             last_response_id=last_response_id
         )
 
-        if final_messages_for_client:
-            return DocsAgentResponse(
-                answer=final_messages_for_client,
-                conversation_id=conversation_id,
-                has_error=False,
-                error_message=None,
-            )
-        else:
-            return DocsAgentResponse(
-                answer="No response generated.",
-                conversation_id=conversation_id,
-                has_error=True,
-                error_message="No response generated.",
-            )
+        return {
+            "answer": final_messages_for_client,
+            "conversation_id": conversation_id,
+            "context": agent_context,
+            "last_response_id": last_response_id,
+            "last_active_agent_name": last_active_agent_name,
+        }
 
     except HTTPException as e:
         logger.error(f"HTTP Exception during agent run for conversation {conversation_id}: {e.detail}")
         raise e
     except Exception as e:
         logger.exception(f"Error during agent run for conversation {conversation_id}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+        return {
+            "error": str(e),
+            "conversation_id": conversation_id,
+        }
+
+@app.post("/docs-agent")
+async def run_agent_endpoint(request: Request):
+    data = await request.json()
+    user_message = data.get("message")
+    conversation_id = data.get("conversation_id")
+
+    logger.info(f"[INCOMING REQUEST] conversation_id: {conversation_id}")
+
+    if not user_message:
+        raise HTTPException(
+            status_code=400,
+            detail="'message' is required.",
+        )
+
+    result = await run_agent_core(user_message, conversation_id)
+
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    return DocsAgentResponse(
+        answer=result["answer"],
+        conversation_id=result["conversation_id"],
+        has_error=False,
+        error_message=None,
+        )
+
+@app.post("/v1/completions")
+async def openai_completions_endpoint(request: Request):
+    body = await request.json()
+    req = OpenAICompletionRequest(**body)
+    # Use prompt as user_message
+    user_message = req.prompt
+    # Optionally allow conversation_id as a custom field or header, else None
+    conversation_id = body.get("conversation_id")
+    # Always OpenAI mode for this endpoint
+    result = await run_agent_core(user_message, conversation_id, openai_mode=True)
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    # OpenAI completions response format
+    return {
+        "id": f"wandb-{result['conversation_id']}-{uuid.uuid4().hex[:8]}",
+        "object": "text_completion",
+        "created": int(time.time()),
+        "model": req.model,
+        "system_fingerprint": None,
+        "choices": [
+            {
+                "text": result["answer"],
+                "index": 0,
+                "logprobs": None,
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    }
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions_endpoint(request: Request):
+    body = await request.json()
+    logger.info(f"[INCOMING REQUEST] BODY: {body}")
+    req = OpenAIChatCompletionRequest(**body)
+    # Extract the last user message
+    user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), None)
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="No user message found in 'messages'.")
+    conversation_id = body.get("conversation_id")
+    result = await run_agent_core(user_msg, conversation_id, openai_mode=True)
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    # OpenAI chat completions response format
+    return {
+        "id": f"wandb-{result['conversation_id']}-{uuid.uuid4().hex[:8]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": req.model,
+        "system_fingerprint": None,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result["answer"]
+                },
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    }
